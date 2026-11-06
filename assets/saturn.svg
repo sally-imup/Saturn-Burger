@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Latar -->
+  <rect width="256" height="256" rx="56" fill="#1B1E2E"/>
+
+  <!-- Cincin bagian belakang -->
+  <g transform="rotate(-18 128 128)">
+    <path d="M24 128 A104 32 0 0 1 232 128" fill="none" stroke="#B8925A" stroke-width="14" stroke-linecap="round" opacity="0.55"/>
+  </g>
+
+  <!-- Planet -->
+  <circle cx="128" cy="128" r="62" fill="#E8C98A"/>
+  <path d="M70 110 Q128 98 186 110" fill="none" stroke="#D1A96A" stroke-width="7" stroke-linecap="round"/>
+  <path d="M74 140 Q128 152 182 140" fill="none" stroke="#D1A96A" stroke-width="7" stroke-linecap="round"/>
+
+  <!-- Cincin bagian depan -->
+  <g transform="rotate(-18 128 128)">
+    <path d="M24 128 A104 32 0 0 0 232 128" fill="none" stroke="#F2DDAE" stroke-width="14" stroke-linecap="round"/>
+  </g>
+</svg>
