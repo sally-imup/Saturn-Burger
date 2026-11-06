@@ -47,7 +47,7 @@ pub fn apply(ctx: &egui::Context) {
     visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, PRIMARY);
 
     ctx.set_visuals(visuals);
-    ctx.style_mut(|style| {
+    ctx.style_mut_of(egui::Theme::Dark, |style| {
         style.spacing.item_spacing = egui::vec2(12.0, 10.0);
         style.spacing.button_padding = egui::vec2(16.0, 9.0);
         style.spacing.interact_size.y = 38.0;

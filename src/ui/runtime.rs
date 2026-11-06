@@ -1,6 +1,6 @@
 use eframe::egui;
 
-use super::{notice, section_heading, theme};
+use super::{notice, section_heading};
 
 pub fn show(ui: &mut egui::Ui) {
     section_heading(
