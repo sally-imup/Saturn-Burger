@@ -1,5 +1,5 @@
 //! Pencarian dan unduhan dari Modrinth: mod, modpack, resource pack, dan shader.
-//! Versi yang dipilih selalu yang terbaru untuk versi Minecraft (dan loader) instance.
+//! Mod otomatis memakai versi terbaru yang cocok. Jenis lain bisa dipilih versinya.
 
 use crate::launcher::{bytes_progress, download, Expect};
 use crate::loader::Loader;
@@ -43,7 +43,7 @@ impl Kind {
     }
 
     /// Folder di dalam instance tempat file kind ini disimpan.
-    fn folder(self) -> &'static str {
+    pub fn folder(self) -> &'static str {
         match self {
             Kind::Mod => "mods",
             Kind::Modpack => "",
@@ -66,12 +66,12 @@ struct SearchResponse {
     hits: Vec<Hit>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct Hashes {
     sha1: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct VFile {
     url: String,
     filename: String,
@@ -81,18 +81,36 @@ struct VFile {
     hashes: Hashes,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct VDep {
     project_id: Option<String>,
     dependency_type: String,
 }
 
-#[derive(Deserialize)]
-struct VersionEntry {
+/// Satu versi sebuah project di Modrinth.
+#[derive(Clone, Deserialize)]
+pub struct VersionEntry {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    version_number: String,
     version_type: String,
+    #[serde(default)]
+    game_versions: Vec<String>,
     files: Vec<VFile>,
     #[serde(default)]
     dependencies: Vec<VDep>,
+}
+
+impl VersionEntry {
+    /// Nama yang ditampilkan ke user. Hanya nama versi, tanpa info loader.
+    pub fn label(&self) -> String {
+        if self.name.trim().is_empty() {
+            self.version_number.clone()
+        } else {
+            self.name.clone()
+        }
+    }
 }
 
 fn http() -> Result<reqwest::blocking::Client> {
@@ -123,13 +141,18 @@ pub fn search(query: &str, kind: Kind, mc: &str, loader: Option<&str>) -> Result
     Ok(r.hits)
 }
 
-/// Versi terbaru (utamakan status release) untuk Minecraft dan loader tertentu.
-fn latest_version(project_id: &str, mc: &str, loader: Option<&str>) -> Result<VersionEntry> {
+/// Semua versi project untuk Minecraft `mc` (dan loader kalau diberikan), dari yang terbaru.
+pub fn list_versions(project_id: &str, mc: &str, loader: Option<&str>) -> Result<Vec<VersionEntry>> {
     let mut q = vec![("game_versions", format!("[\"{mc}\"]"))];
     if let Some(l) = loader {
         q.push(("loaders", format!("[\"{l}\"]")));
     }
-    let mut list: Vec<VersionEntry> = get_json(&format!("{API}/project/{project_id}/version"), &q)?;
+    get_json(&format!("{API}/project/{project_id}/version"), &q)
+}
+
+/// Versi terbaru (utamakan status release) untuk Minecraft dan loader tertentu.
+fn latest_version(project_id: &str, mc: &str, loader: Option<&str>) -> Result<VersionEntry> {
+    let mut list = list_versions(project_id, mc, loader)?;
     if list.is_empty() {
         bail!(
             "tidak ada versi untuk Minecraft {mc}{}",
@@ -168,17 +191,16 @@ fn save_file(f: &VFile, dir: &Path, progress: &mut dyn FnMut(Progress)) -> Resul
     Ok(dest)
 }
 
-/// Pasang versi terbaru sebuah project ke folder game. Untuk mod, dependensi wajib ikut dipasang.
+/// Pasang versi terbaru sebuah mod ke folder game, beserta dependensi wajibnya.
 /// Mengembalikan nama file yang terpasang.
 pub fn install_project(
     project_id: &str,
-    kind: Kind,
     mc: &str,
     loader: Option<&str>,
     game_dir: &Path,
     progress: &mut dyn FnMut(Progress),
 ) -> Result<Vec<String>> {
-    let dir = game_dir.join(kind.folder());
+    let dir = game_dir.join(Kind::Mod.folder());
     let mut queue = vec![project_id.to_string()];
     let mut seen = HashSet::new();
     let mut installed = Vec::new();
@@ -189,14 +211,12 @@ pub fn install_project(
         }
         progress(Progress::text(format!("Mencari versi {pid}...")));
         let v = latest_version(&pid, mc, loader)?;
-        if kind == Kind::Mod {
-            queue.extend(
-                v.dependencies
-                    .iter()
-                    .filter(|d| d.dependency_type == "required")
-                    .filter_map(|d| d.project_id.clone()),
-            );
-        }
+        queue.extend(
+            v.dependencies
+                .iter()
+                .filter(|d| d.dependency_type == "required")
+                .filter_map(|d| d.project_id.clone()),
+        );
         let file = primary_file(&v)?;
         let path = save_file(file, &dir, progress)?;
         installed.push(
@@ -206,6 +226,20 @@ pub fn install_project(
         );
     }
     Ok(installed)
+}
+
+/// Pasang satu versi resource pack atau shader yang dipilih user. Mengembalikan nama file.
+pub fn install_file(
+    entry: &VersionEntry,
+    kind: Kind,
+    game_dir: &Path,
+    progress: &mut dyn FnMut(Progress),
+) -> Result<String> {
+    let path = save_file(primary_file(entry)?, &game_dir.join(kind.folder()), progress)?;
+    Ok(path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default())
 }
 
 /// Info utama dari sebuah modpack (.mrpack).
@@ -249,15 +283,9 @@ fn read_index(path: &Path) -> Result<Index> {
     Ok(serde_json::from_reader(entry)?)
 }
 
-/// Unduh modpack terbaru untuk Minecraft `mc` ke `dir`, dan baca info-nya.
-pub fn download_modpack(
-    project_id: &str,
-    mc: &str,
-    dir: &Path,
-    progress: &mut dyn FnMut(Progress),
-) -> Result<(PathBuf, PackMeta)> {
-    let v = latest_version(project_id, mc, None)?;
-    let path = save_file(primary_file(&v)?, dir, progress)?;
+/// Unduh file .mrpack dari versi modpack yang dipilih, lalu baca info-nya.
+pub fn download_pack(entry: &VersionEntry, dir: &Path, progress: &mut dyn FnMut(Progress)) -> Result<(PathBuf, PackMeta)> {
+    let path = save_file(primary_file(entry)?, dir, progress)?;
     let index = read_index(&path)?;
 
     let mut loader = Loader::Vanilla;
@@ -278,7 +306,8 @@ pub fn download_modpack(
         .dependencies
         .get("minecraft")
         .cloned()
-        .unwrap_or_else(|| mc.to_string());
+        .or_else(|| entry.game_versions.first().cloned())
+        .unwrap_or_default();
 
     Ok((
         path,

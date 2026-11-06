@@ -112,12 +112,17 @@ enum Msg {
     },
     Search(Result<Vec<Hit>, String>),
     ModDone(Result<String, String>),
+    /// Daftar versi untuk jendela pilih versi.
+    PickList(Result<Vec<modrinth::VersionEntry>, String>),
 }
 
 /// Aksi yang diminta dari jendela Mod dalam satu frame.
 enum ModAction {
     Search,
+    /// Mod: langsung pasang versi terbaru.
     Install(Hit),
+    /// Resource pack, shader, modpack: buka daftar versi dulu.
+    Pick(Hit),
 }
 
 struct App {
@@ -160,6 +165,10 @@ struct App {
     mod_results: Vec<Hit>,
     mod_busy: bool,
     mod_status: String,
+    /// Project yang sedang dipilih versinya (jendela pilih versi terbuka jika Some).
+    pick_hit: Option<Hit>,
+    pick_versions: Vec<modrinth::VersionEntry>,
+    pick_loading: bool,
 
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
@@ -214,6 +223,9 @@ impl App {
             mod_results: Vec::new(),
             mod_busy: false,
             mod_status: String::new(),
+            pick_hit: None,
+            pick_versions: Vec::new(),
+            pick_loading: false,
             tx,
             rx,
         }
@@ -340,11 +352,10 @@ impl App {
         });
     }
 
-    /// Pasang versi terbaru sebuah mod, resource pack, atau shader ke instance yang dibuka.
+    /// Pasang versi terbaru sebuah mod ke instance yang dibuka, beserta dependensinya.
     fn start_mod_install(&mut self, hit: Hit) {
         let Some(idx) = self.mods_for else { return };
         let Some(p) = self.profiles.get(idx).cloned() else { return };
-        let kind = self.mod_kind;
         self.mod_busy = true;
         self.mod_status = format!("Memasang {}...", hit.title);
         let tx = self.tx.clone();
@@ -356,7 +367,6 @@ impl App {
             let dir = profiles::game_dir(&p);
             let r = modrinth::install_project(
                 &hit.project_id,
-                kind,
                 &p.version_id,
                 p.loader.modrinth(),
                 &dir,
@@ -368,12 +378,57 @@ impl App {
         });
     }
 
-    /// Pasang modpack sebagai instance baru (memakai loader dari modpack itu sendiri).
-    fn start_modpack(&mut self, hit: Hit) {
+    /// Ambil daftar versi project (sesuai versi Minecraft instance) lalu buka jendela pilih versi.
+    fn start_pick(&mut self, hit: Hit) {
         let Some(idx) = self.mods_for else { return };
         let Some(mc) = self.profiles.get(idx).map(|p| p.version_id.clone()) else { return };
+        self.pick_versions.clear();
+        self.pick_loading = true;
+        self.pick_hit = Some(hit.clone());
+        let project_id = hit.project_id;
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let r = modrinth::list_versions(&project_id, &mc, None).map_err(|e| format!("{e:#}"));
+            let _ = tx.send(Msg::PickList(r));
+        });
+    }
+
+    /// Pasang versi yang dipilih user dari jendela pilih versi.
+    fn start_pick_install(&mut self, i: usize) {
+        let Some(entry) = self.pick_versions.get(i).cloned() else { return };
+        self.pick_hit = None;
+        if self.mod_kind == Kind::Modpack {
+            self.start_modpack(entry);
+        } else {
+            self.start_file_install(entry);
+        }
+    }
+
+    /// Pasang satu resource pack atau shader ke instance yang dibuka.
+    fn start_file_install(&mut self, entry: modrinth::VersionEntry) {
+        let Some(idx) = self.mods_for else { return };
+        let Some(p) = self.profiles.get(idx).cloned() else { return };
+        let kind = self.mod_kind;
         self.mod_busy = true;
-        self.mod_status = format!("Memasang modpack {}...", hit.title);
+        self.mod_status = format!("Memasang {}...", entry.label());
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let ptx = tx.clone();
+            let mut progress = |pr: Progress| {
+                let _ = ptx.send(Msg::Status(pr));
+            };
+            let dir = profiles::game_dir(&p);
+            let r = modrinth::install_file(&entry, kind, &dir, &mut progress)
+                .map(|name| format!("Terpasang: {name}"))
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(Msg::ModDone(r));
+        });
+    }
+
+    /// Pasang modpack versi yang dipilih sebagai instance baru (dengan loader dari modpack itu).
+    fn start_modpack(&mut self, entry: modrinth::VersionEntry) {
+        self.mod_busy = true;
+        self.mod_status = format!("Memasang modpack {}...", entry.label());
         let versions = self.versions.clone();
         let names: Vec<String> = self.profiles.iter().map(|p| p.name.clone()).collect();
         let tx = self.tx.clone();
@@ -382,8 +437,7 @@ impl App {
             let mut progress = |pr: Progress| {
                 let _ = ptx.send(Msg::Status(pr));
             };
-            let r = create_modpack(&hit.project_id, &mc, &versions, &names, &mut progress)
-                .map_err(|e| format!("{e:#}"));
+            let r = create_modpack(&entry, &versions, &names, &mut progress).map_err(|e| format!("{e:#}"));
             let _ = tx.send(Msg::Installed(r));
         });
     }
@@ -585,6 +639,7 @@ impl App {
 
         ui.add_space(4.0);
         let busy = self.mod_busy;
+        let kind = self.mod_kind;
         egui::ScrollArea::vertical()
             .max_height(300.0)
             .auto_shrink([false, false])
@@ -601,12 +656,18 @@ impl App {
                                     ui.label(egui::RichText::new(h.description.as_str()).color(MUTED).small());
                                 });
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    let is_mod = kind == Kind::Mod;
+                                    let label = if is_mod { "Install" } else { "Pilih versi" };
                                     let btn = egui::Button::image_and_text(
                                         icons::img(&self.icons.download, 14.0),
-                                        "Install",
+                                        label,
                                     );
                                     if ui.add_enabled(!busy && !blocked, btn).clicked() {
-                                        action = Some(ModAction::Install(h.clone()));
+                                        action = Some(if is_mod {
+                                            ModAction::Install(h.clone())
+                                        } else {
+                                            ModAction::Pick(h.clone())
+                                        });
                                     }
                                 });
                             });
@@ -618,7 +679,7 @@ impl App {
         ui.separator();
         ui.label(
             egui::RichText::new(format!(
-                "Versi terbaru untuk Minecraft {} otomatis dipilih.  {}",
+                "Minecraft {}.  {}",
                 p.version_id, self.mod_status
             ))
             .color(MUTED)
@@ -630,14 +691,13 @@ impl App {
 
 /// Unduh modpack (.mrpack), buat instance baru dengan loader-nya, lalu pasang semua file-nya.
 fn create_modpack(
-    project_id: &str,
-    mc: &str,
+    entry: &modrinth::VersionEntry,
     versions: &[Version],
     names: &[String],
     progress: &mut dyn FnMut(Progress),
 ) -> anyhow::Result<Profile> {
     let dir = launcher::data_dir().join("downloads");
-    let (path, meta) = modrinth::download_modpack(project_id, mc, &dir, progress)?;
+    let (path, meta) = modrinth::download_pack(entry, &dir, progress)?;
     let v = versions
         .iter()
         .find(|v| v.id == meta.mc)
@@ -780,6 +840,15 @@ impl eframe::App for App {
                     self.mod_status = s;
                     self.mod_busy = false;
                     self.progress = None;
+                }
+                Msg::PickList(Ok(list)) => {
+                    self.pick_loading = false;
+                    self.pick_versions = list;
+                }
+                Msg::PickList(Err(e)) => {
+                    self.pick_loading = false;
+                    self.pick_versions.clear();
+                    self.mod_status = format!("Gagal memuat versi: {e}");
                 }
                 Msg::ModDone(Err(e)) => {
                     self.mod_status = format!("Gagal: {e}");
@@ -1049,16 +1118,67 @@ impl eframe::App for App {
                     }
                     match action {
                         Some(ModAction::Search) => self.start_search(),
-                        Some(ModAction::Install(hit)) => {
-                            if self.mod_kind == Kind::Modpack {
-                                self.start_modpack(hit);
-                            } else {
-                                self.start_mod_install(hit);
-                            }
-                        }
+                        Some(ModAction::Install(hit)) => self.start_mod_install(hit),
+                        Some(ModAction::Pick(hit)) => self.start_pick(hit),
                         None => {}
                     }
                 }
+            }
+        }
+
+        // Jendela pilih versi (resource pack, shader, modpack)
+        if let Some(title) = self.pick_hit.as_ref().map(|h| h.title.clone()) {
+            let mut open = true;
+            let mut chosen: Option<usize> = None;
+            egui::Window::new(format!("Pilih versi: {title}"))
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .fixed_size([460.0, 420.0])
+                .show(ctx, |ui| {
+                    if self.pick_loading {
+                        ui.label(egui::RichText::new("Memuat daftar versi...").color(MUTED));
+                        return;
+                    }
+                    if self.pick_versions.is_empty() {
+                        ui.label(egui::RichText::new("Tidak ada versi untuk Minecraft ini").color(MUTED));
+                        return;
+                    }
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            for (i, v) in self.pick_versions.iter().enumerate() {
+                                egui::Frame::none()
+                                    .fill(CARD)
+                                    .rounding(8.0)
+                                    .inner_margin(8.0)
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(v.label());
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    let btn = egui::Button::image_and_text(
+                                                        icons::img(&self.icons.download, 14.0),
+                                                        "Install",
+                                                    );
+                                                    if ui.add_enabled(!self.mod_busy, btn).clicked() {
+                                                        chosen = Some(i);
+                                                    }
+                                                },
+                                            );
+                                        });
+                                    });
+                                ui.add_space(4.0);
+                            }
+                        });
+                });
+            if !open {
+                self.pick_hit = None;
+            }
+            if let Some(i) = chosen {
+                self.start_pick_install(i);
             }
         }
     }
