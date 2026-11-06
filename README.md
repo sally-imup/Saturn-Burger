@@ -85,3 +85,11 @@ cargo build --release
 ```
 
 Minecraft game files are not included. Later installer phases will retrieve required files from their appropriate sources. Saturn is an independent community project and is not affiliated with Mojang Studios or Microsoft.
+
+
+## CI formatting behavior
+
+The Windows CI workflow runs `cargo fmt --all` before the formatting check.
+This normalizes Rust formatting in the runner workspace, then verifies that the
+formatted workspace is clean before Clippy, tests, and release compilation.
+The workflow does not commit formatting changes back to the repository.
