@@ -1,4 +1,5 @@
 use crate::manifest::{self, rules_allow, Artifact, Library, LibDownloads, Rule, Version};
+use crate::java;
 use crate::Config;
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -272,13 +273,21 @@ pub fn launch(v: &Version, cfg: &Config, progress: &mut dyn FnMut(String)) -> Re
         }
     };
 
+    // Pilih Java: otomatis (unduh sesuai versi) atau path manual dari pengaturan.
+    let major = vj.java_version.as_ref().map(|j| j.major_version).unwrap_or(8);
+    let java_exe = if cfg.java_path.trim().is_empty() || cfg.java_path.trim().eq_ignore_ascii_case("auto") {
+        java::ensure_java(major, progress)?.display().to_string()
+    } else {
+        cfg.java_path.clone()
+    };
+
     progress("Menjalankan Minecraft...".into());
-    let mut cmd = Command::new(&cfg.java_path);
+    let mut cmd = Command::new(&java_exe);
     cmd.args(&jvm)
         .arg(&vj.main_class)
         .args(&game)
         .current_dir(&game_dir);
     cmd.spawn()
-        .with_context(|| format!("gagal menjalankan '{}' (cek path Java)", cfg.java_path))?;
+        .with_context(|| format!("gagal menjalankan '{}' (cek path Java)", java_exe))?;
     Ok(())
 }

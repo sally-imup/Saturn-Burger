@@ -31,6 +31,13 @@ pub struct VersionJson {
     pub libraries: Vec<Library>,
     pub arguments: Option<Arguments>,
     pub minecraft_arguments: Option<String>,
+    /// Versi Java yang dibutuhkan versi ini (default 8 jika tidak ada).
+    pub java_version: Option<JavaVersion>,
+}
+
+#[derive(Deserialize)]
+pub struct JavaVersion {
+    pub major_version: u32,
 }
 
 #[derive(Deserialize)]

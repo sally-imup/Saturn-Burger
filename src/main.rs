@@ -1,7 +1,9 @@
 #![windows_subsystem = "windows"]
 
+mod java;
 mod launcher;
 mod manifest;
+mod update;
 
 use eframe::egui;
 use manifest::Version;
@@ -12,6 +14,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 #[serde(default)]
 pub struct Config {
     pub username: String,
+    /// "auto" = unduh Java yang sesuai otomatis; atau isi path ke javaw.exe sendiri.
     pub java_path: String,
     pub jvm_args: String,
 }
@@ -20,7 +23,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             username: "Player".into(),
-            java_path: "javaw".into(),
+            java_path: "auto".into(),
             jvm_args: "-Xmx2G -XX:+UseG1GC -XX:G1NewSizePercent=20 -XX:MaxGCPauseMillis=50".into(),
         }
     }
@@ -58,6 +61,7 @@ enum Msg {
     Manifest(Result<Vec<Version>, String>),
     Status(String),
     Done(Result<(), String>),
+    UpdateAvailable(update::Update),
 }
 
 struct App {
@@ -67,6 +71,7 @@ struct App {
     selected: Option<usize>,
     status: String,
     busy: bool,
+    update: Option<update::Update>,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
 }
@@ -82,6 +87,14 @@ impl App {
             let _ = t.send(Msg::Manifest(r));
         });
 
+        // Cek update di background; kalau gagal (offline, dll.) diam saja.
+        let t = tx.clone();
+        std::thread::spawn(move || {
+            if let Ok(Some(u)) = update::check() {
+                let _ = t.send(Msg::UpdateAvailable(u));
+            }
+        });
+
         Self {
             cfg,
             versions: Vec::new(),
@@ -89,6 +102,7 @@ impl App {
             selected: None,
             status: "Memuat daftar versi...".into(),
             busy: true,
+            update: None,
             tx,
             rx,
         }
@@ -109,6 +123,18 @@ impl App {
             };
             let res = launcher::launch(&v, &cfg, &mut progress).map_err(|e| format!("{e:#}"));
             let _ = tx.send(Msg::Done(res));
+        });
+    }
+
+    fn start_update(&mut self, u: update::Update) {
+        self.status = format!("Mengunduh Saturn {}...", u.version);
+        let tx = self.tx.clone();
+        std::thread::spawn(move || match update::download_and_run(&u) {
+            // Installer mengambil alih; tutup launcher supaya file exe bisa diganti.
+            Ok(()) => std::process::exit(0),
+            Err(e) => {
+                let _ = tx.send(Msg::Status(format!("Gagal update: {e:#}")));
+            }
         });
     }
 }
@@ -135,6 +161,7 @@ impl eframe::App for App {
                     self.status = format!("Error: {e}");
                     self.busy = false;
                 }
+                Msg::UpdateAvailable(u) => self.update = Some(u),
             }
         }
         if self.busy {
@@ -144,6 +171,14 @@ impl eframe::App for App {
         egui::TopBottomPanel::top("header").show(ctx, |ui| {
             ui.add_space(6.0);
             ui.heading("Saturn");
+            if let Some(u) = self.update.clone() {
+                ui.horizontal(|ui| {
+                    ui.label(format!("Versi baru {} tersedia", u.version));
+                    if ui.button("Update").clicked() {
+                        self.start_update(u.clone());
+                    }
+                });
+            }
             ui.horizontal(|ui| {
                 for f in [Filter::Release, Filter::Snapshot, Filter::Old, Filter::All] {
                     if ui.selectable_label(self.filter == f, f.label()).clicked() {
@@ -203,7 +238,7 @@ impl eframe::App for App {
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([520.0, 640.0]),
+        viewport: egui::ViewportBuilder::default().with_inner_size([520.0, 680.0]),
         ..Default::default()
     };
     eframe::run_native(
