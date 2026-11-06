@@ -1,6 +1,7 @@
 //! Profil (instance) yang sudah terpasang. Disimpan di %APPDATA%\Saturn\profiles.json.
 
 use crate::launcher::data_dir;
+use crate::loader::Loader;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf};
@@ -14,6 +15,23 @@ pub struct Profile {
     /// true = folder game sendiri (mod, save, config terpisah).
     /// false = pakai folder game bersama.
     pub isolated: bool,
+    /// Loader mod. Profil lama tanpa field ini dianggap vanilla.
+    #[serde(default)]
+    pub loader: Loader,
+    /// Versi loader, kosong untuk vanilla.
+    #[serde(default)]
+    pub loader_version: String,
+}
+
+impl Profile {
+    /// Teks singkat untuk daftar profil: "Vanilla release" atau "Fabric 0.16.9".
+    pub fn loader_label(&self) -> String {
+        if self.loader == Loader::Vanilla {
+            self.version_kind.clone()
+        } else {
+            format!("{} {}", self.loader.label(), self.loader_version)
+        }
+    }
 }
 
 fn file() -> PathBuf {

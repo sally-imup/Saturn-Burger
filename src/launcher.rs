@@ -1,4 +1,5 @@
 use crate::java;
+use crate::loader::{self, Loader};
 use crate::manifest::{self, rules_allow, Artifact, LibDownloads, Library, Rule, Version, VersionJson};
 use crate::profiles::{self, Profile};
 use crate::progress::Progress;
@@ -296,6 +297,7 @@ fn handle_library(lib: &Library, libs: &Path, natives: &Path, on_bytes: &mut dyn
             p
         }
         None => {
+            // Format lama Fabric/Quilt/Forge: hanya ada nama maven dan base URL.
             let base = lib.url.as_deref().unwrap_or("https://libraries.minecraft.net/");
             let rel = maven_path(&lib.name);
             let p = libs.join(&rel);
@@ -304,6 +306,34 @@ fn handle_library(lib: &Library, libs: &Path, natives: &Path, on_bytes: &mut dyn
         }
     };
     Ok(Some(path))
+}
+
+/// Pasang daftar library yang lolos rules Windows. Mengembalikan path jar untuk classpath.
+/// `range` adalah rentang fraksi progres yang dipakai daftar ini.
+pub fn fetch_libraries(
+    libs: &[Library],
+    libdir: &Path,
+    natives: &Path,
+    range: (f32, f32),
+    progress: &mut dyn FnMut(Progress),
+) -> Result<Vec<PathBuf>> {
+    let active: Vec<&Library> = libs.iter().filter(|l| rules_allow(l.rules.as_deref())).collect();
+    let total = active.len().max(1);
+    let (start, end) = range;
+    let span = end - start;
+    let mut cp = Vec::new();
+    for (i, lib) in active.iter().enumerate() {
+        let lo = start + span * (i as f32 / total as f32);
+        let hi = start + span * ((i + 1) as f32 / total as f32);
+        let label = format!("Library {}/{}", i + 1, total);
+        let entry = handle_library(lib, libdir, natives, &mut |d, t| {
+            progress(bytes_progress(&label, d, t, lo, hi))
+        })?;
+        if let Some(p) = entry {
+            cp.push(p);
+        }
+    }
+    Ok(cp)
 }
 
 fn subst(s: &str, vars: &HashMap<&str, String>) -> String {
@@ -345,7 +375,12 @@ fn collect_args(list: &[Value], vars: &HashMap<&str, String>) -> Vec<String> {
     out
 }
 
-/// Pasang semua file versi ini (client, library, natives, asset). Aman dijalankan ulang:
+/// Major version Java yang dibutuhkan sebuah versi (default 8).
+pub fn java_major(vj: &VersionJson) -> u32 {
+    vj.java_version.as_ref().map(|j| j.major_version).unwrap_or(8)
+}
+
+/// Pasang semua file vanilla (client, library, natives, asset). Aman dijalankan ulang:
 /// file yang sudah utuh dilewati, file yang rusak diunduh ulang.
 /// Pembagian progres: client 0–10%, library 10–50%, asset 50–100%.
 pub fn install(v: &Version, progress: &mut dyn FnMut(Progress)) -> Result<Installed> {
@@ -371,24 +406,7 @@ pub fn install(v: &Version, progress: &mut dyn FnMut(Progress)) -> Result<Instal
     )?;
 
     // Library
-    let active: Vec<&Library> = vj
-        .libraries
-        .iter()
-        .filter(|l| rules_allow(l.rules.as_deref()))
-        .collect();
-    let total = active.len().max(1);
-    let mut cp: Vec<PathBuf> = Vec::new();
-    for (i, lib) in active.iter().enumerate() {
-        let lo = 0.10 + 0.40 * (i as f32 / total as f32);
-        let hi = 0.10 + 0.40 * ((i + 1) as f32 / total as f32);
-        let label = format!("Library {}/{}", i + 1, total);
-        let entry = handle_library(lib, &libs, &natives, &mut |d, t| {
-            progress(bytes_progress(&label, d, t, lo, hi))
-        })?;
-        if let Some(p) = entry {
-            cp.push(p);
-        }
-    }
+    let mut cp = fetch_libraries(&vj.libraries, &libs, &natives, (0.10, 0.50), progress)?;
     cp.push(client);
     let sep = if cfg!(windows) { ";" } else { ":" };
     let classpath = cp
@@ -445,6 +463,15 @@ pub fn install(v: &Version, progress: &mut dyn FnMut(Progress)) -> Result<Instal
     })
 }
 
+/// Pasang semua file sebuah profil: versi vanilla dan, kalau ada, loader-nya.
+pub fn install_profile(v: &Version, p: &Profile, progress: &mut dyn FnMut(Progress)) -> Result<()> {
+    let inst = install(v, progress)?;
+    if p.loader != Loader::Vanilla {
+        loader::ensure(p.loader, &p.version_id, &p.loader_version, java_major(&inst.vj), progress)?;
+    }
+    Ok(())
+}
+
 /// Jalankan sebuah profil. Pasang file yang belum ada, lalu start JVM.
 pub fn launch(p: &Profile, cfg: &Config, progress: &mut dyn FnMut(Progress)) -> Result<()> {
     let v = Version {
@@ -457,11 +484,34 @@ pub fn launch(p: &Profile, cfg: &Config, progress: &mut dyn FnMut(Progress)) -> 
 
     let inst = install(&v, progress)?;
     let vj = &inst.vj;
+    let major = java_major(vj);
+    let libs = data_dir().join("libraries");
+    let sep = if cfg!(windows) { ";" } else { ":" };
+
+    // Loader (Fabric/Quilt/Forge/NeoForge): library dan main class sendiri, digabung dengan vanilla.
+    let loader_profile = if p.loader == Loader::Vanilla {
+        None
+    } else {
+        Some(loader::ensure(p.loader, &p.version_id, &p.loader_version, major, progress)?)
+    };
+    let mut cp_parts: Vec<String> = match &loader_profile {
+        Some(lp) => fetch_libraries(&lp.libraries, &libs, &inst.natives, (0.0, 1.0), progress)?
+            .iter()
+            .map(|c| c.display().to_string())
+            .collect(),
+        None => Vec::new(),
+    };
+    cp_parts.push(inst.classpath.clone());
+    let classpath = cp_parts.join(sep);
 
     // Variabel placeholder argumen
+    let version_name = loader_profile
+        .as_ref()
+        .map(|lp| lp.id.clone())
+        .unwrap_or_else(|| vj.id.clone());
     let mut vars: HashMap<&str, String> = HashMap::new();
     vars.insert("auth_player_name", cfg.username.clone());
-    vars.insert("version_name", vj.id.clone());
+    vars.insert("version_name", version_name);
     vars.insert("game_directory", game_dir.display().to_string());
     vars.insert("assets_root", inst.assets.display().to_string());
     vars.insert("assets_index_name", vj.asset_index.id.clone());
@@ -473,37 +523,49 @@ pub fn launch(p: &Profile, cfg: &Config, progress: &mut dyn FnMut(Progress)) -> 
     vars.insert("user_properties", "{}".into());
     vars.insert("version_type", v.kind.clone());
     vars.insert("natives_directory", inst.natives.display().to_string());
+    vars.insert("library_directory", libs.display().to_string());
+    vars.insert("classpath_separator", sep.to_string());
     vars.insert("launcher_name", "Saturn".into());
     vars.insert("launcher_version", env!("CARGO_PKG_VERSION").into());
-    vars.insert("classpath", inst.classpath.clone());
+    vars.insert("classpath", classpath.clone());
 
-    // JVM args: pengaturan user + argumen dari version json
-    let user_jvm: Vec<String> = cfg.jvm_args.split_whitespace().map(String::from).collect();
-    let (mut jvm, game): (Vec<String>, Vec<String>) = match &vj.arguments {
+    // JVM args: pengaturan user + argumen vanilla + argumen loader
+    let mut jvm: Vec<String> = cfg.jvm_args.split_whitespace().map(String::from).collect();
+    let mut game: Vec<String> = Vec::new();
+    match &vj.arguments {
         Some(a) => {
-            let mut jvm = user_jvm;
             jvm.extend(collect_args(&a.jvm, &vars));
-            (jvm, collect_args(&a.game, &vars))
+            game.extend(collect_args(&a.game, &vars));
         }
         None => {
             // Format lama (sebelum 1.13)
-            let mut jvm = user_jvm;
             jvm.push(format!("-Djava.library.path={}", inst.natives.display()));
             jvm.push("-cp".into());
-            jvm.push(inst.classpath.clone());
-            let game = vj
-                .minecraft_arguments
-                .as_deref()
-                .unwrap_or("")
-                .split_whitespace()
-                .map(|s| subst(s, &vars))
-                .collect::<Vec<String>>();
-            (jvm, game)
+            jvm.push(classpath.clone());
+            game.extend(
+                vj.minecraft_arguments
+                    .as_deref()
+                    .unwrap_or("")
+                    .split_whitespace()
+                    .map(|s| subst(s, &vars)),
+            );
         }
-    };
+    }
+    if let Some(lp) = &loader_profile {
+        if let Some(a) = &lp.arguments {
+            jvm.extend(collect_args(&a.jvm, &vars));
+            game.extend(collect_args(&a.game, &vars));
+        }
+        if let Some(mca) = &lp.minecraft_arguments {
+            game.extend(mca.split_whitespace().map(|s| subst(s, &vars)));
+        }
+    }
+    let main_class = loader_profile
+        .as_ref()
+        .map(|lp| lp.main_class.clone())
+        .unwrap_or_else(|| vj.main_class.clone());
 
     // Pilih Java: otomatis (unduh sesuai versi) atau path manual dari pengaturan.
-    let major = vj.java_version.as_ref().map(|j| j.major_version).unwrap_or(8);
     let auto_java = cfg.java_path.trim().is_empty() || cfg.java_path.trim().eq_ignore_ascii_case("auto");
     let java_exe = if auto_java {
         let exe = java::ensure_java(major, progress)?;
@@ -519,7 +581,7 @@ pub fn launch(p: &Profile, cfg: &Config, progress: &mut dyn FnMut(Progress)) -> 
     progress(Progress::text("Menjalankan Minecraft..."));
     let mut cmd = Command::new(&java_exe);
     cmd.args(&jvm)
-        .arg(&vj.main_class)
+        .arg(&main_class)
         .args(&game)
         .current_dir(&game_dir);
     cmd.spawn()
