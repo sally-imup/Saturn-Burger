@@ -29,7 +29,10 @@ jobs:
         run: |
           # Modul yang dibutuhkan Minecraft. Kalau mod tertentu error "module not found",
           # tambahkan modulnya di sini (mis. jdk.localedata untuk locale tambahan).
-          $mods = "java.base,java.desktop,java.logging,java.management,java.naming,java.net.http,java.prefs,java.xml,jdk.crypto.ec,jdk.unsupported,jdk.zipfs"
+          # java.instrument: dipakai mod/loader yang memakai Java agent (mis. Mixin).
+          # java.sql: dipakai beberapa mod untuk penyimpanan data.
+          # jdk.localedata: supaya bahasa selain Inggris berfungsi.
+          $mods = "java.base,java.desktop,java.instrument,java.logging,java.management,java.naming,java.net.http,java.prefs,java.sql,java.xml,jdk.crypto.ec,jdk.localedata,jdk.unsupported,jdk.zipfs"
           jlink --add-modules $mods --strip-debug --no-man-pages --no-header-files --compress zip-6 --output "jre-${{ matrix.java }}"
           Compress-Archive -Path "jre-${{ matrix.java }}" -DestinationPath "saturn-jre-${{ matrix.java }}-win64.zip"
 

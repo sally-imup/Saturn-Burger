@@ -7,6 +7,7 @@ use anyhow::{anyhow, Result};
 use std::{
     fs, io,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 fn adoptium_url(major: u32) -> String {
@@ -23,6 +24,31 @@ pub fn javaw_path(major: u32) -> PathBuf {
 
 fn staging_dir(major: u32) -> PathBuf {
     data_dir().join("runtime").join(format!("java-{major}.staging"))
+}
+
+/// File CDS archive untuk runtime ini. Dibuat sekali, dipakai setiap launch.
+fn cds_archive(major: u32) -> PathBuf {
+    data_dir().join("runtime").join(format!("java-{major}.jsa"))
+}
+
+/// Pastikan CDS archive ada, lalu kembalikan argumen JVM untuk memakainya.
+/// Best-effort: kalau gagal dibuat, launch tetap jalan tanpa CDS.
+pub fn ensure_cds(exe: &Path, major: u32, progress: &mut dyn FnMut(Progress)) -> Option<String> {
+    let archive = cds_archive(major);
+    if !archive.exists() {
+        progress(Progress::text("Mengoptimalkan startup Java (sekali saja)..."));
+        let ok = Command::new(exe)
+            .arg("-Xshare:dump")
+            .arg(format!("-XX:SharedArchiveFile={}", archive.display()))
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !ok {
+            let _ = fs::remove_file(&archive);
+            return None;
+        }
+    }
+    Some(format!("-XX:SharedArchiveFile={}", archive.display()))
 }
 
 /// Pastikan JRE dengan major version tertentu tersedia; unduh dan ekstrak jika belum ada.
@@ -63,6 +89,8 @@ pub fn ensure_java(major: u32, progress: &mut dyn FnMut(Progress)) -> Result<Pat
 fn fetch_runtime(url: &str, major: u32, zip_path: &Path, progress: &mut dyn FnMut(Progress)) -> Result<()> {
     // Arsip lama mungkin rusak; selalu mulai dari unduhan baru.
     let _ = fs::remove_file(zip_path);
+    // CDS archive milik runtime lama tidak berlaku lagi.
+    let _ = fs::remove_file(cds_archive(major));
     let label = format!("Mengunduh Java {major}");
     download(url, zip_path, &Expect::none(), &mut |d, t| {
         progress(bytes_progress(&label, d, t, 0.0, 1.0))

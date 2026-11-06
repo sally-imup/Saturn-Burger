@@ -479,7 +479,7 @@ pub fn launch(p: &Profile, cfg: &Config, progress: &mut dyn FnMut(Progress)) -> 
 
     // JVM args: pengaturan user + argumen dari version json
     let user_jvm: Vec<String> = cfg.jvm_args.split_whitespace().map(String::from).collect();
-    let (jvm, game): (Vec<String>, Vec<String>) = match &vj.arguments {
+    let (mut jvm, game): (Vec<String>, Vec<String>) = match &vj.arguments {
         Some(a) => {
             let mut jvm = user_jvm;
             jvm.extend(collect_args(&a.jvm, &vars));
@@ -504,8 +504,14 @@ pub fn launch(p: &Profile, cfg: &Config, progress: &mut dyn FnMut(Progress)) -> 
 
     // Pilih Java: otomatis (unduh sesuai versi) atau path manual dari pengaturan.
     let major = vj.java_version.as_ref().map(|j| j.major_version).unwrap_or(8);
-    let java_exe = if cfg.java_path.trim().is_empty() || cfg.java_path.trim().eq_ignore_ascii_case("auto") {
-        java::ensure_java(major, progress)?.display().to_string()
+    let auto_java = cfg.java_path.trim().is_empty() || cfg.java_path.trim().eq_ignore_ascii_case("auto");
+    let java_exe = if auto_java {
+        let exe = java::ensure_java(major, progress)?;
+        // CDS hanya untuk runtime bawaan Saturn; path Java manual dibiarkan apa adanya.
+        if let Some(flag) = java::ensure_cds(&exe, major, progress) {
+            jvm.insert(0, flag);
+        }
+        exe.display().to_string()
     } else {
         cfg.java_path.clone()
     };
