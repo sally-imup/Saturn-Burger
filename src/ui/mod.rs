@@ -11,8 +11,10 @@ mod versions;
 use eframe::egui::{self, Color32};
 
 use crate::core::account::LocalAccountStore;
+use crate::core::versions::ManifestController;
 
 pub use accounts::AccountsPageState;
+pub use versions::VersionsPageState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
@@ -103,7 +105,7 @@ pub fn show_sidebar(ui: &mut egui::Ui, current_page: &mut Page) {
 
     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
         ui.separator();
-        ui.label(egui::RichText::new("PHASE 1 · LOCAL PROFILES").size(9.0).strong().color(theme::MUTED));
+        ui.label(egui::RichText::new("PHASE 2 · VERSION METADATA").size(9.0).strong().color(theme::MUTED));
         ui.label(egui::RichText::new("Windows x64").size(10.0).color(theme::MUTED));
         ui.add_space(4.0);
     });
@@ -142,6 +144,8 @@ pub fn show_page(
     accounts: Option<&mut LocalAccountStore>,
     account_error: Option<&str>,
     accounts_page: &mut AccountsPageState,
+    manifest_controller: Option<&ManifestController>,
+    versions_page: &mut VersionsPageState,
 ) {
     match page {
         Page::Home => home::show(
@@ -150,7 +154,10 @@ pub fn show_page(
             startup_message,
             accounts.as_deref(),
         ),
-        Page::Versions => versions::show(ui),
+        Page::Versions => match manifest_controller {
+            Some(controller) => versions::show(ui, controller, versions_page),
+            None => notice(ui, "Manifest unavailable", "Saturn could not initialize the metadata cache."),
+        },
         Page::Downloads => downloads::show(ui),
         Page::Accounts => match accounts {
             Some(store) => accounts::show(ui, store, accounts_page),

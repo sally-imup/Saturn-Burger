@@ -1,6 +1,7 @@
 use eframe::egui;
 
 use crate::core::account::LocalAccountStore;
+use crate::core::versions::ManifestController;
 use crate::storage;
 use crate::ui::{self, AccountsPageState, Page};
 
@@ -10,6 +11,7 @@ struct StartupState {
     startup_message: String,
     account_store: Option<LocalAccountStore>,
     account_store_error: Option<String>,
+    manifest_controller: Option<ManifestController>,
 }
 
 pub struct SaturnApp {
@@ -19,6 +21,8 @@ pub struct SaturnApp {
     startup_message: String,
     account_store: Option<LocalAccountStore>,
     account_store_error: Option<String>,
+    manifest_controller: Option<ManifestController>,
+    versions_page: ui::VersionsPageState,
     accounts_page: AccountsPageState,
 }
 
@@ -33,6 +37,8 @@ impl SaturnApp {
             startup_message: startup.startup_message,
             account_store: startup.account_store,
             account_store_error: startup.account_store_error,
+            manifest_controller: startup.manifest_controller,
+            versions_page: ui::VersionsPageState::default(),
             accounts_page: AccountsPageState::default(),
         }
     }
@@ -84,6 +90,8 @@ impl eframe::App for SaturnApp {
                             self.account_store.as_mut(),
                             self.account_store_error.as_deref(),
                             &mut self.accounts_page,
+                            self.manifest_controller.as_ref(),
+                            &mut self.versions_page,
                         );
                     });
             });
@@ -101,6 +109,7 @@ fn load_startup_state() -> StartupState {
                     startup_message: "Saturn storage and local profile database are ready.".to_owned(),
                     account_store: Some(store),
                     account_store_error: None,
+                    manifest_controller: Some(ManifestController::new(&path)),
                 },
                 Err(error) => StartupState {
                     data_directory: display_path,
@@ -108,6 +117,7 @@ fn load_startup_state() -> StartupState {
                     startup_message: "Saturn storage is ready, but the local profile database needs attention.".to_owned(),
                     account_store: None,
                     account_store_error: Some(error),
+                    manifest_controller: Some(ManifestController::new(&path)),
                 },
             }
         }
@@ -119,6 +129,7 @@ fn load_startup_state() -> StartupState {
             startup_message: format!("Could not prepare Saturn application data directories: {error}"),
             account_store: None,
             account_store_error: Some("Application storage is unavailable.".to_owned()),
+            manifest_controller: None,
         },
     }
 }

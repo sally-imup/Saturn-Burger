@@ -28,8 +28,8 @@ jobs:
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: Format Rust sources
-        run: cargo fmt --all
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
 
       - name: Run Clippy
         run: cargo clippy --all-targets -- -D warnings

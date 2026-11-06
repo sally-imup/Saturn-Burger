@@ -1,4 +1,4 @@
-//! Core launcher subsystems. Implementations are added in later development phases.
+//! Core launcher subsystems. Version metadata is implemented in Phase 2; other systems follow in later phases.
 
 #[allow(dead_code)]
 pub mod account;
