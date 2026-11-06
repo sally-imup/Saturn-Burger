@@ -36,6 +36,7 @@ pub struct VersionJson {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct JavaVersion {
     pub major_version: u32,
 }

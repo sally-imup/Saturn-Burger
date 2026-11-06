@@ -236,9 +236,22 @@ impl eframe::App for App {
     }
 }
 
+/// Ikon jendela, dibuat oleh build.rs dari assets/saturn.svg.
+const ICON_RGBA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/saturn_icon_256.rgba"));
+
+fn app_icon() -> egui::IconData {
+    egui::IconData {
+        rgba: ICON_RGBA.to_vec(),
+        width: 256,
+        height: 256,
+    }
+}
+
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([520.0, 680.0]),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([520.0, 680.0])
+            .with_icon(app_icon()),
         ..Default::default()
     };
     eframe::run_native(

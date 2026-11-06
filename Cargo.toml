@@ -12,6 +12,12 @@ reqwest = { version = "0.12", features = ["blocking", "json"] }
 zip = "2"
 dirs = "5"
 
+# Dipakai build.rs untuk membuat ikon dari assets/saturn.svg
+[build-dependencies]
+resvg = "0.43"
+ico = "0.3"
+winres = "0.1"
+
 [profile.release]
 opt-level = 3
 lto = true

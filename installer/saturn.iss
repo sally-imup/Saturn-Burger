@@ -31,10 +31,12 @@ PrivilegesRequiredOverridesAllowed=dialog
 CloseApplications=yes
 UninstallDisplayName={#MyAppName}
 UninstallDisplayIcon={app}\{#MyAppExeName}
-; SetupIconFile=..\assets\saturn.ico   ; aktifkan setelah saturn.ico dibuat dari saturn.svg
+; Ikon installer dibuat otomatis oleh build.rs (cargo build) di target\icons\saturn.ico
+SetupIconFile=..\target\icons\saturn.ico
 
 [Tasks]
-Name: "desktopicon"; Description: "Buat shortcut di desktop"; Flags: unchecked
+; Shortcut desktop dicentang secara default.
+Name: "desktopicon"; Description: "Buat shortcut di desktop"; GroupDescription: "Shortcut:"
 
 [Files]
 Source: "..\dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
