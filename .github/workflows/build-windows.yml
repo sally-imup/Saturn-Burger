@@ -1,0 +1,60 @@
+name: Windows CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Windows x64
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v7
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test
+
+      - name: Build release executable
+        run: cargo build --release
+
+      - name: Prepare distribution package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/release/rustlauncher.exe dist/RustLauncher.exe
+          Copy-Item README.md dist/README.md
+          Copy-Item LICENSE dist/LICENSE
+          Compress-Archive -Path dist/* -DestinationPath RustLauncher-windows-x64.zip -Force
+
+      - name: Upload Windows executable and ZIP
+        uses: actions/upload-artifact@v7
+        with:
+          name: RustLauncher-windows-x64
+          path: |
+            dist/RustLauncher.exe
+            RustLauncher-windows-x64.zip
+          if-no-files-found: error
+          retention-days: 14

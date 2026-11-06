@@ -1,0 +1,20 @@
+[package]
+name = "rustlauncher"
+version = "0.1.0"
+edition = "2024"
+description = "A modular Minecraft Java launcher for Windows, written in Rust"
+license = "MIT"
+readme = "README.md"
+
+[dependencies]
+eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "glow"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dev]
+opt-level = 1
