@@ -1,0 +1,47 @@
+name: Build slim Java runtime
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  jre:
+    name: jlink Java ${{ matrix.java }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Java 8 tidak punya sistem modul, jadi tetap memakai JRE biasa dari Adoptium.
+        java: ["17", "21"]
+    runs-on: windows-latest
+    steps:
+      - name: Setup JDK ${{ matrix.java }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+
+      - name: Build slim runtime with jlink
+        shell: pwsh
+        run: |
+          # Modul yang dibutuhkan Minecraft. Kalau mod tertentu error "module not found",
+          # tambahkan modulnya di sini (mis. jdk.localedata untuk locale tambahan).
+          $mods = "java.base,java.desktop,java.logging,java.management,java.naming,java.net.http,java.prefs,java.xml,jdk.crypto.ec,jdk.unsupported,jdk.zipfs"
+          jlink --add-modules $mods --strip-debug --no-man-pages --no-header-files --compress zip-6 --output "jre-${{ matrix.java }}"
+          Compress-Archive -Path "jre-${{ matrix.java }}" -DestinationPath "saturn-jre-${{ matrix.java }}-win64.zip"
+
+      - name: Upload runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: saturn-jre-${{ matrix.java }}
+          path: saturn-jre-${{ matrix.java }}-win64.zip
+          if-no-files-found: error
+
+      - name: Attach to GitHub Release (tag v*)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: saturn-jre-${{ matrix.java }}-win64.zip

@@ -45,6 +45,8 @@ pub struct JavaVersion {
 pub struct AssetIndexRef {
     pub id: String,
     pub url: String,
+    pub sha1: Option<String>,
+    pub size: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -56,6 +58,8 @@ pub struct ClientDownloads {
 pub struct Artifact {
     pub path: Option<String>,
     pub url: String,
+    pub sha1: Option<String>,
+    pub size: Option<u64>,
 }
 
 #[derive(Deserialize)]

@@ -1,16 +1,25 @@
 use crate::java;
 use crate::manifest::{self, rules_allow, Artifact, LibDownloads, Library, Rule, Version, VersionJson};
 use crate::profiles::{self, Profile};
+use crate::progress::Progress;
 use crate::Config;
-use anyhow::{Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 use serde_json::Value;
+use sha1::{Digest, Sha1};
 use std::{
     collections::HashMap,
-    fs, io,
+    fs, io::{self, Read, Write},
     path::{Path, PathBuf},
     process::Command,
+    thread,
+    time::Duration,
 };
+
+/// File di atas ambang ini dianggap "besar" dan progresnya ditampilkan per byte.
+const BIG_FILE: u64 = 1_000_000;
+const CHUNK: usize = 64 * 1024;
+const ATTEMPTS: u32 = 3;
 
 #[derive(Deserialize)]
 struct AssetIndex {
@@ -20,6 +29,7 @@ struct AssetIndex {
 #[derive(Deserialize)]
 struct AssetObject {
     hash: String,
+    size: Option<u64>,
 }
 
 /// Hasil memasang sebuah versi.
@@ -28,6 +38,25 @@ pub struct Installed {
     pub classpath: String,
     pub natives: PathBuf,
     pub assets: PathBuf,
+}
+
+/// Checksum yang diharapkan untuk sebuah file. Kosong berarti tidak ada verifikasi.
+pub struct Expect {
+    pub sha1: Option<String>,
+    pub size: Option<u64>,
+}
+
+impl Expect {
+    pub fn none() -> Self {
+        Self { sha1: None, size: None }
+    }
+}
+
+fn expect_art(a: &Artifact) -> Expect {
+    Expect {
+        sha1: a.sha1.clone(),
+        size: a.size,
+    }
 }
 
 pub fn data_dir() -> PathBuf {
@@ -59,19 +88,144 @@ pub fn save_config(c: &Config) {
     }
 }
 
-/// Unduh file hanya jika belum ada (tulis ke .part dulu, lalu rename).
-fn download(url: &str, dest: &Path) -> Result<()> {
+/// Ukuran file dalam satuan yang mudah dibaca.
+pub fn fmt_size(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    let b = bytes as f64;
+    if b < KB {
+        format!("{bytes} B")
+    } else if b < KB * KB {
+        format!("{:.1} KB", b / KB)
+    } else if b < KB * KB * KB {
+        format!("{:.1} MB", b / (KB * KB))
+    } else {
+        format!("{:.2} GB", b / (KB * KB * KB))
+    }
+}
+
+fn ratio(done: u64, total: u64) -> f32 {
+    if total == 0 {
+        0.0
+    } else {
+        (done as f32 / total as f32).clamp(0.0, 1.0)
+    }
+}
+
+/// Teks "dulu / total (persen)", atau hanya ukuran jika total tidak diketahui.
+fn size_text(done: u64, total: u64) -> String {
+    if total > 0 {
+        format!("{} / {} ({:.0}%)", fmt_size(done), fmt_size(total), ratio(done, total) * 100.0)
+    } else {
+        fmt_size(done)
+    }
+}
+
+/// Progres untuk satu file: `lo..hi` adalah rentang fraksi bar utama yang dipakai file ini.
+pub fn bytes_progress(label: &str, done: u64, total: u64, lo: f32, hi: f32) -> Progress {
+    let text = format!("{label} — {}", size_text(done, total));
+    if total > 0 {
+        Progress::at(text, lo + (hi - lo) * ratio(done, total))
+    } else {
+        Progress::text(text)
+    }
+}
+
+fn hex(digest: &[u8]) -> String {
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Cek apakah file sudah utuh: ukuran dan SHA-1 harus cocok jika diketahui.
+pub fn verify(path: &Path, expect: &Expect) -> Result<bool> {
+    if let Some(sz) = expect.size {
+        if fs::metadata(path)?.len() != sz {
+            return Ok(false);
+        }
+    }
+    if let Some(want) = &expect.sha1 {
+        let mut f = io::BufReader::new(fs::File::open(path)?);
+        let mut hasher = Sha1::new();
+        let mut buf = vec![0u8; CHUNK];
+        loop {
+            let n = f.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
+        return Ok(hex(&hasher.finalize()).eq_ignore_ascii_case(want));
+    }
+    Ok(true)
+}
+
+/// Satu kali percobaan unduh: tulis ke .part sambil menghitung SHA-1, lalu verifikasi.
+fn try_download(url: &str, dest: &Path, expect: &Expect, on_bytes: &mut dyn FnMut(u64, u64)) -> Result<()> {
+    let mut resp = reqwest::blocking::get(url)?.error_for_status()?;
+    let total = expect.size.or(resp.content_length()).unwrap_or(0);
+
+    let tmp = PathBuf::from(format!("{}.part", dest.display()));
+    let mut out = io::BufWriter::new(fs::File::create(&tmp)?);
+    let mut hasher = Sha1::new();
+    let mut buf = vec![0u8; CHUNK];
+    let mut done: u64 = 0;
+
+    on_bytes(0, total);
+    loop {
+        let n = resp.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        out.write_all(&buf[..n])?;
+        hasher.update(&buf[..n]);
+        done += n as u64;
+        on_bytes(done, total);
+    }
+    out.flush()?;
+    drop(out);
+
+    if let Some(sz) = expect.size {
+        if done != sz {
+            bail!("ukuran file tidak cocok (dapat {done} byte, seharusnya {sz})");
+        }
+    }
+    if let Some(want) = &expect.sha1 {
+        let got = hex(&hasher.finalize());
+        if !got.eq_ignore_ascii_case(want) {
+            bail!("checksum SHA-1 tidak cocok (file rusak saat diunduh)");
+        }
+    }
+    fs::rename(&tmp, dest)?;
+    Ok(())
+}
+
+/// Pastikan file ada dan utuh. File yang sudah ada tapi rusak dihapus lalu diunduh ulang.
+/// Unduhan dicoba sampai 3 kali sebelum menyerah.
+pub fn download(url: &str, dest: &Path, expect: &Expect, on_bytes: &mut dyn FnMut(u64, u64)) -> Result<()> {
     if dest.exists() {
-        return Ok(());
+        if verify(dest, expect)? {
+            return Ok(());
+        }
+        fs::remove_file(dest).with_context(|| format!("gagal menghapus file rusak {}", dest.display()))?;
     }
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
     }
-    let bytes = reqwest::blocking::get(url)?.error_for_status()?.bytes()?;
-    let tmp = PathBuf::from(format!("{}.part", dest.display()));
-    fs::write(&tmp, &bytes)?;
-    fs::rename(&tmp, dest)?;
-    Ok(())
+
+    let mut last_err: Option<anyhow::Error> = None;
+    for attempt in 1..=ATTEMPTS {
+        match try_download(url, dest, expect, on_bytes) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                let _ = fs::remove_file(format!("{}.part", dest.display()));
+                last_err = Some(e);
+                if attempt < ATTEMPTS {
+                    thread::sleep(Duration::from_secs(attempt as u64));
+                }
+            }
+        }
+    }
+    Err(last_err
+        .unwrap_or_else(|| anyhow!("unduhan gagal"))
+        .context(format!("gagal mengunduh {url} setelah {ATTEMPTS} percobaan")))
 }
 
 /// Path maven dari "group:artifact:version[:classifier]".
@@ -110,7 +264,7 @@ fn extract_natives(jar: &Path, dest: &Path) -> Result<()> {
 
 /// Unduh satu library. Mengembalikan path jar jika library masuk classpath,
 /// None jika library ini hanya berisi native (sudah diekstrak).
-fn handle_library(lib: &Library, libs: &Path, natives: &Path) -> Result<Option<PathBuf>> {
+fn handle_library(lib: &Library, libs: &Path, natives: &Path, on_bytes: &mut dyn FnMut(u64, u64)) -> Result<Option<PathBuf>> {
     let dl: Option<&LibDownloads> = lib.downloads.as_ref();
 
     // Format lama: natives dideklarasikan lewat peta classifier.
@@ -118,7 +272,7 @@ fn handle_library(lib: &Library, libs: &Path, natives: &Path) -> Result<Option<P
         let key = key.replace("${arch}", "64");
         if let Some(art) = dl.and_then(|d| d.classifiers.as_ref()).and_then(|c| c.get(&key)) {
             let path = libs.join(artifact_path(art, &lib.name));
-            download(&art.url, &path)?;
+            download(&art.url, &path, &expect_art(art), on_bytes)?;
             extract_natives(&path, natives)?;
         }
         return Ok(None);
@@ -128,7 +282,7 @@ fn handle_library(lib: &Library, libs: &Path, natives: &Path) -> Result<Option<P
     if lib.name.contains(":natives-windows") {
         if let Some(art) = dl.and_then(|d| d.artifact.as_ref()) {
             let path = libs.join(artifact_path(art, &lib.name));
-            download(&art.url, &path)?;
+            download(&art.url, &path, &expect_art(art), on_bytes)?;
             extract_natives(&path, natives)?;
         }
         return Ok(None);
@@ -138,14 +292,14 @@ fn handle_library(lib: &Library, libs: &Path, natives: &Path) -> Result<Option<P
     let path = match dl.and_then(|d| d.artifact.as_ref()) {
         Some(art) => {
             let p = libs.join(artifact_path(art, &lib.name));
-            download(&art.url, &p)?;
+            download(&art.url, &p, &expect_art(art), on_bytes)?;
             p
         }
         None => {
             let base = lib.url.as_deref().unwrap_or("https://libraries.minecraft.net/");
             let rel = maven_path(&lib.name);
             let p = libs.join(&rel);
-            download(&format!("{base}{rel}"), &p)?;
+            download(&format!("{base}{rel}"), &p, &Expect::none(), on_bytes)?;
             p
         }
     };
@@ -191,32 +345,47 @@ fn collect_args(list: &[Value], vars: &HashMap<&str, String>) -> Vec<String> {
     out
 }
 
-/// Pasang semua file versi ini (client, library, natives, asset). Aman dijalankan ulang.
-pub fn install(v: &Version, progress: &mut dyn FnMut(String)) -> Result<Installed> {
+/// Pasang semua file versi ini (client, library, natives, asset). Aman dijalankan ulang:
+/// file yang sudah utuh dilewati, file yang rusak diunduh ulang.
+/// Pembagian progres: client 0–10%, library 10–50%, asset 50–100%.
+pub fn install(v: &Version, progress: &mut dyn FnMut(Progress)) -> Result<Installed> {
     let root = data_dir();
     let libs = root.join("libraries");
     let assets = root.join("assets");
     let natives = root.join("natives").join(&v.id);
     fs::create_dir_all(&natives)?;
 
-    progress("Mengambil info versi...".into());
+    progress(Progress::text("Mengambil info versi..."));
     let vj = manifest::fetch_version_json(&v.url)?;
 
-    progress("Mengunduh client...".into());
+    // Client
     let client = root
         .join("versions")
         .join(&vj.id)
         .join(format!("{}.jar", vj.id));
-    download(&vj.downloads.client.url, &client)?;
+    download(
+        &vj.downloads.client.url,
+        &client,
+        &expect_art(&vj.downloads.client),
+        &mut |d, t| progress(bytes_progress("Mengunduh client", d, t, 0.0, 0.10)),
+    )?;
 
+    // Library
+    let active: Vec<&Library> = vj
+        .libraries
+        .iter()
+        .filter(|l| rules_allow(l.rules.as_deref()))
+        .collect();
+    let total = active.len().max(1);
     let mut cp: Vec<PathBuf> = Vec::new();
-    let total = vj.libraries.len();
-    for (i, lib) in vj.libraries.iter().enumerate() {
-        if !rules_allow(lib.rules.as_deref()) {
-            continue;
-        }
-        progress(format!("Library {}/{}", i + 1, total));
-        if let Some(p) = handle_library(lib, &libs, &natives)? {
+    for (i, lib) in active.iter().enumerate() {
+        let lo = 0.10 + 0.40 * (i as f32 / total as f32);
+        let hi = 0.10 + 0.40 * ((i + 1) as f32 / total as f32);
+        let label = format!("Library {}/{}", i + 1, total);
+        let entry = handle_library(lib, &libs, &natives, &mut |d, t| {
+            progress(bytes_progress(&label, d, t, lo, hi))
+        })?;
+        if let Some(p) = entry {
             cp.push(p);
         }
     }
@@ -228,21 +397,45 @@ pub fn install(v: &Version, progress: &mut dyn FnMut(String)) -> Result<Installe
         .collect::<Vec<_>>()
         .join(sep);
 
-    progress("Mengunduh asset...".into());
+    // Asset index
     let idx_path = assets
         .join("indexes")
         .join(format!("{}.json", vj.asset_index.id));
-    download(&vj.asset_index.url, &idx_path)?;
+    download(
+        &vj.asset_index.url,
+        &idx_path,
+        &Expect {
+            sha1: vj.asset_index.sha1.clone(),
+            size: vj.asset_index.size,
+        },
+        &mut |d, t| progress(bytes_progress("Mengunduh daftar asset", d, t, 0.40, 0.50)),
+    )?;
     let index: AssetIndex = serde_json::from_str(&fs::read_to_string(&idx_path)?)?;
-    let total = index.objects.len();
+
+    // Asset objects: nama file = SHA-1 isinya, jadi bisa langsung diverifikasi.
+    let total = index.objects.len().max(1);
     for (i, obj) in index.objects.values().enumerate() {
-        if i % 200 == 0 {
-            progress(format!("Asset {i}/{total}"));
+        let lo = 0.50 + 0.50 * (i as f32 / total as f32);
+        let hi = 0.50 + 0.50 * ((i + 1) as f32 / total as f32);
+        if i % 50 == 0 {
+            progress(Progress::at(format!("Memeriksa asset {i}/{total}"), lo));
         }
         let h = &obj.hash;
         let url = format!("https://resources.download.minecraft.net/{}/{}", &h[..2], h);
-        download(&url, &assets.join("objects").join(&h[..2]).join(h))?;
+        let path = assets.join("objects").join(&h[..2]).join(h);
+        let expect = Expect {
+            sha1: Some(h.clone()),
+            size: obj.size,
+        };
+        let label = format!("Asset {}/{}", i + 1, total);
+        download(&url, &path, &expect, &mut |d, t| {
+            // File kecil terlalu cepat berganti; progres per byte hanya untuk file besar.
+            if t >= BIG_FILE {
+                progress(bytes_progress(&label, d, t, lo, hi));
+            }
+        })?;
     }
+    progress(Progress::at(format!("Asset {total}/{total} siap"), 1.0));
 
     Ok(Installed {
         vj,
@@ -253,7 +446,7 @@ pub fn install(v: &Version, progress: &mut dyn FnMut(String)) -> Result<Installe
 }
 
 /// Jalankan sebuah profil. Pasang file yang belum ada, lalu start JVM.
-pub fn launch(p: &Profile, cfg: &Config, progress: &mut dyn FnMut(String)) -> Result<()> {
+pub fn launch(p: &Profile, cfg: &Config, progress: &mut dyn FnMut(Progress)) -> Result<()> {
     let v = Version {
         id: p.version_id.clone(),
         kind: p.version_kind.clone(),
@@ -317,7 +510,7 @@ pub fn launch(p: &Profile, cfg: &Config, progress: &mut dyn FnMut(String)) -> Re
         cfg.java_path.clone()
     };
 
-    progress("Menjalankan Minecraft...".into());
+    progress(Progress::text("Menjalankan Minecraft..."));
     let mut cmd = Command::new(&java_exe);
     cmd.args(&jvm)
         .arg(&vj.main_class)

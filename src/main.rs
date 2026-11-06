@@ -2,6 +2,7 @@
 
 mod icons;
 mod java;
+mod progress;
 mod launcher;
 mod manifest;
 mod profiles;
@@ -10,6 +11,7 @@ mod update;
 use eframe::egui;
 use manifest::Version;
 use profiles::Profile;
+use progress::Progress;
 use serde::{Deserialize, Serialize};
 use std::sync::mpsc::{channel, Receiver, Sender};
 
@@ -39,6 +41,30 @@ impl Default for Config {
             jvm_args: "-Xmx2G -XX:+UseG1GC -XX:MaxGCPauseMillis=50".into(),
         }
     }
+}
+
+/// Preset flag JVM. Opsi eksperimental (G1NewSizePercent dll.) butuh UnlockExperimentalVMOptions.
+const PRESETS: &[(&str, &str)] = &[
+    (
+        "Hemat memori",
+        "-Xms512M -Xmx2G -XX:+UseG1GC -XX:+UseStringDeduplication -XX:MaxGCPauseMillis=100",
+    ),
+    (
+        "Seimbang",
+        "-Xms1G -Xmx4G -XX:+UseG1GC -XX:+UseStringDeduplication -XX:MaxGCPauseMillis=50 -XX:+UnlockExperimentalVMOptions -XX:G1NewSizePercent=20 -XX:G1ReservePercent=20",
+    ),
+    (
+        "Performa",
+        "-Xms2G -Xmx6G -XX:+UseG1GC -XX:+UseStringDeduplication -XX:MaxGCPauseMillis=50 -XX:+UnlockExperimentalVMOptions -XX:G1NewSizePercent=30 -XX:G1ReservePercent=20 -XX:+DisableExplicitGC",
+    ),
+];
+
+fn preset_name(args: &str) -> &'static str {
+    PRESETS
+        .iter()
+        .find(|(_, a)| *a == args)
+        .map(|(n, _)| *n)
+        .unwrap_or("Kustom")
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -71,7 +97,7 @@ impl Filter {
 
 enum Msg {
     Manifest(Result<Vec<Version>, String>),
-    Status(String),
+    Status(Progress),
     Done(Result<(), String>),
     UpdateAvailable(update::Update),
     Installed(Result<Profile, String>),
@@ -133,6 +159,7 @@ impl App {
             versions: Vec::new(),
             update: None,
             status: "Memuat daftar versi...".into(),
+            progress: None,
             busy: true,
             show_add: false,
             confirm_remove: None,
@@ -152,8 +179,8 @@ impl App {
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let ptx = tx.clone();
-            let mut progress = |s: String| {
-                let _ = ptx.send(Msg::Status(s));
+            let mut progress = |p: Progress| {
+                let _ = ptx.send(Msg::Status(p));
             };
             let profile = Profile {
                 name,
@@ -179,8 +206,8 @@ impl App {
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let progress_tx = tx.clone();
-            let mut progress = |s: String| {
-                let _ = progress_tx.send(Msg::Status(s));
+            let mut progress = |p: Progress| {
+                let _ = progress_tx.send(Msg::Status(p));
             };
             let res = launcher::launch(&p, &cfg, &mut progress).map_err(|e| format!("{e:#}"));
             let _ = tx.send(Msg::Done(res));
@@ -212,7 +239,7 @@ impl App {
             // Installer mengambil alih; tutup launcher supaya file exe bisa diganti.
             Ok(()) => std::process::exit(0),
             Err(e) => {
-                let _ = tx.send(Msg::Status(format!("Gagal update: {e:#}")));
+                let _ = tx.send(Msg::Status(Progress::text(format!("Gagal update: {e:#}"))));
             }
         });
     }
@@ -350,8 +377,12 @@ impl eframe::App for App {
                     self.status = format!("Gagal memuat manifest: {e}");
                     self.busy = false;
                 }
-                Msg::Status(s) => self.status = s,
+                Msg::Status(p) => {
+                    self.status = p.text;
+                    self.progress = p.fraction;
+                }
                 Msg::Done(Ok(())) => {
+                    self.progress = None;
                     self.status = "Game berjalan".into();
                     self.busy = false;
                 }
@@ -364,6 +395,7 @@ impl eframe::App for App {
                     self.profiles.push(p);
                     let _ = profiles::save(&self.profiles);
                     self.selected = Some(self.profiles.len() - 1);
+                    self.progress = None;
                     self.status = "Versi berhasil dipasang".into();
                     self.busy = false;
                 }
@@ -419,6 +451,21 @@ impl eframe::App for App {
                             ui.text_edit_singleline(&mut self.cfg.java_path);
                             ui.end_row();
 
+                            ui.label("Preset");
+                            egui::ComboBox::from_id_source("preset")
+                                .selected_text(preset_name(&self.cfg.jvm_args))
+                                .show_ui(ui, |ui| {
+                                    for (name, args) in PRESETS {
+                                        if ui
+                                            .selectable_label(self.cfg.jvm_args == *args, *name)
+                                            .clicked()
+                                        {
+                                            self.cfg.jvm_args = args.to_string();
+                                        }
+                                    }
+                                });
+                            ui.end_row();
+
                             ui.label("JVM args");
                             ui.text_edit_singleline(&mut self.cfg.jvm_args);
                             ui.end_row();
@@ -429,6 +476,9 @@ impl eframe::App for App {
                             .small(),
                     );
                 });
+            if let Some(f) = self.progress {
+                ui.add(egui::ProgressBar::new(f).show_percentage().desired_width(f32::INFINITY));
+            }
             ui.label(egui::RichText::new(self.status.as_str()).color(MUTED));
             ui.add_space(4.0);
         });
