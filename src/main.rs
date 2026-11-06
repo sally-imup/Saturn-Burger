@@ -114,6 +114,8 @@ struct App {
     versions: Vec<Version>,
     update: Option<update::Update>,
     status: String,
+    /// Progres bar 0.0 sampai 1.0 saat sedang mengunduh.
+    progress: Option<f32>,
     busy: bool,
 
     // State popup "Tambah versi"
@@ -452,7 +454,7 @@ impl eframe::App for App {
                             ui.end_row();
 
                             ui.label("Preset");
-                            egui::ComboBox::from_id_source("preset")
+                            egui::ComboBox::from_id_salt("preset")
                                 .selected_text(preset_name(&self.cfg.jvm_args))
                                 .show_ui(ui, |ui| {
                                     for (name, args) in PRESETS {
