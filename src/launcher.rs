@@ -1,5 +1,6 @@
-use crate::manifest::{self, rules_allow, Artifact, Library, LibDownloads, Rule, Version};
 use crate::java;
+use crate::manifest::{self, rules_allow, Artifact, LibDownloads, Library, Rule, Version, VersionJson};
+use crate::profiles::{self, Profile};
 use crate::Config;
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -21,6 +22,14 @@ struct AssetObject {
     hash: String,
 }
 
+/// Hasil memasang sebuah versi.
+pub struct Installed {
+    pub vj: VersionJson,
+    pub classpath: String,
+    pub natives: PathBuf,
+    pub assets: PathBuf,
+}
+
 pub fn data_dir() -> PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -28,10 +37,19 @@ pub fn data_dir() -> PathBuf {
 }
 
 pub fn load_config() -> Config {
-    fs::read_to_string(data_dir().join("config.json"))
+    let mut cfg: Config = fs::read_to_string(data_dir().join("config.json"))
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+
+    // Buang opsi eksperimental yang sudah tersimpan di config lama dan bikin JVM gagal start.
+    cfg.jvm_args = cfg
+        .jvm_args
+        .split_whitespace()
+        .filter(|a| !a.starts_with("-XX:G1NewSizePercent"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    cfg
 }
 
 pub fn save_config(c: &Config) {
@@ -173,14 +191,13 @@ fn collect_args(list: &[Value], vars: &HashMap<&str, String>) -> Vec<String> {
     out
 }
 
-pub fn launch(v: &Version, cfg: &Config, progress: &mut dyn FnMut(String)) -> Result<()> {
+/// Pasang semua file versi ini (client, library, natives, asset). Aman dijalankan ulang.
+pub fn install(v: &Version, progress: &mut dyn FnMut(String)) -> Result<Installed> {
     let root = data_dir();
     let libs = root.join("libraries");
     let assets = root.join("assets");
     let natives = root.join("natives").join(&v.id);
-    let game_dir = root.join("game");
     fs::create_dir_all(&natives)?;
-    fs::create_dir_all(&game_dir)?;
 
     progress("Mengambil info versi...".into());
     let vj = manifest::fetch_version_json(&v.url)?;
@@ -192,7 +209,6 @@ pub fn launch(v: &Version, cfg: &Config, progress: &mut dyn FnMut(String)) -> Re
         .join(format!("{}.jar", vj.id));
     download(&vj.downloads.client.url, &client)?;
 
-    // Libraries + natives
     let mut cp: Vec<PathBuf> = Vec::new();
     let total = vj.libraries.len();
     for (i, lib) in vj.libraries.iter().enumerate() {
@@ -212,7 +228,6 @@ pub fn launch(v: &Version, cfg: &Config, progress: &mut dyn FnMut(String)) -> Re
         .collect::<Vec<_>>()
         .join(sep);
 
-    // Assets (sequential; bisa dibuat paralel nanti)
     progress("Mengunduh asset...".into());
     let idx_path = assets
         .join("indexes")
@@ -229,12 +244,33 @@ pub fn launch(v: &Version, cfg: &Config, progress: &mut dyn FnMut(String)) -> Re
         download(&url, &assets.join("objects").join(&h[..2]).join(h))?;
     }
 
+    Ok(Installed {
+        vj,
+        classpath,
+        natives,
+        assets,
+    })
+}
+
+/// Jalankan sebuah profil. Pasang file yang belum ada, lalu start JVM.
+pub fn launch(p: &Profile, cfg: &Config, progress: &mut dyn FnMut(String)) -> Result<()> {
+    let v = Version {
+        id: p.version_id.clone(),
+        kind: p.version_kind.clone(),
+        url: p.version_url.clone(),
+    };
+    let game_dir = profiles::game_dir(p);
+    fs::create_dir_all(&game_dir)?;
+
+    let inst = install(&v, progress)?;
+    let vj = &inst.vj;
+
     // Variabel placeholder argumen
     let mut vars: HashMap<&str, String> = HashMap::new();
     vars.insert("auth_player_name", cfg.username.clone());
     vars.insert("version_name", vj.id.clone());
     vars.insert("game_directory", game_dir.display().to_string());
-    vars.insert("assets_root", assets.display().to_string());
+    vars.insert("assets_root", inst.assets.display().to_string());
     vars.insert("assets_index_name", vj.asset_index.id.clone());
     vars.insert("auth_uuid", "00000000-0000-0000-0000-000000000000".into());
     vars.insert("auth_access_token", "0".into());
@@ -243,12 +279,12 @@ pub fn launch(v: &Version, cfg: &Config, progress: &mut dyn FnMut(String)) -> Re
     vars.insert("user_type", "legacy".into());
     vars.insert("user_properties", "{}".into());
     vars.insert("version_type", v.kind.clone());
-    vars.insert("natives_directory", natives.display().to_string());
+    vars.insert("natives_directory", inst.natives.display().to_string());
     vars.insert("launcher_name", "Saturn".into());
     vars.insert("launcher_version", env!("CARGO_PKG_VERSION").into());
-    vars.insert("classpath", classpath.clone());
+    vars.insert("classpath", inst.classpath.clone());
 
-    // JVM args: pengaturan user (dari config) + argumen dari version json
+    // JVM args: pengaturan user + argumen dari version json
     let user_jvm: Vec<String> = cfg.jvm_args.split_whitespace().map(String::from).collect();
     let (jvm, game): (Vec<String>, Vec<String>) = match &vj.arguments {
         Some(a) => {
@@ -259,9 +295,9 @@ pub fn launch(v: &Version, cfg: &Config, progress: &mut dyn FnMut(String)) -> Re
         None => {
             // Format lama (sebelum 1.13)
             let mut jvm = user_jvm;
-            jvm.push(format!("-Djava.library.path={}", natives.display()));
+            jvm.push(format!("-Djava.library.path={}", inst.natives.display()));
             jvm.push("-cp".into());
-            jvm.push(classpath.clone());
+            jvm.push(inst.classpath.clone());
             let game = vj
                 .minecraft_arguments
                 .as_deref()
