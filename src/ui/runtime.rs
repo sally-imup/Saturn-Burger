@@ -1,6 +1,6 @@
 use eframe::egui;
 
-use super::{notice, section_heading};
+use super::{notice, section_heading, theme};
 
 pub fn show(ui: &mut egui::Ui) {
     section_heading(
@@ -10,8 +10,8 @@ pub fn show(ui: &mut egui::Ui) {
     );
     notice(
         ui,
-        "Custom JVM is not part of Phase 0",
-        "The planned runtime pipeline will detect compatible Java versions, download managed runtimes, validate required modules and optionally create minimized JRE images. It will not replace the JVM with a new implementation.",
+        "Custom lightweight JRE is planned for Phase 4",
+        "Saturn will manage compatible Java distributions and may build minimized JRE images with jlink after compatibility testing. This is runtime optimization, not a new JVM implementation.",
     );
     ui.add_space(14.0);
     ui.label(egui::RichText::new("Planned runtime profiles").strong());

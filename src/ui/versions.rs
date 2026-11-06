@@ -2,7 +2,7 @@ use eframe::egui;
 
 use crate::core::versions::VersionCategory;
 
-use super::{notice, section_heading};
+use super::{notice, section_heading, theme};
 
 pub fn show(ui: &mut egui::Ui) {
     section_heading(
@@ -17,32 +17,27 @@ pub fn show(ui: &mut egui::Ui) {
         .show(ui, |ui| {
             for (index, category) in VersionCategory::ALL.into_iter().enumerate() {
                 let (description, directory) = category_details(category);
-                egui::Frame::group(ui.style())
-                    .fill(egui::Color32::from_rgb(25, 32, 44))
-                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(43, 53, 70)))
-                    .corner_radius(10)
-                    .inner_margin(egui::Margin::same(14))
-                    .show(ui, |ui| {
-                        ui.set_min_width(300.0);
-                        ui.label(egui::RichText::new(category.label()).size(14.0).strong());
-                        ui.label(
-                            egui::RichText::new(description)
-                                .size(11.0)
-                                .color(egui::Color32::from_gray(145)),
-                        );
-                        ui.add_space(6.0);
-                        ui.label(
-                            egui::RichText::new(directory)
-                                .monospace()
-                                .size(10.0)
-                                .color(egui::Color32::from_gray(125)),
-                        );
-                        ui.label(
-                            egui::RichText::new("Not connected yet")
-                                .size(10.0)
-                                .color(egui::Color32::from_rgb(225, 183, 112)),
-                        );
-                    });
+                theme::card(ui, |ui| {
+                    ui.set_min_width(300.0);
+                    ui.label(egui::RichText::new(category.label()).size(14.0).strong());
+                    ui.label(
+                        egui::RichText::new(description)
+                            .size(11.0)
+                            .color(theme::MUTED),
+                    );
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new(directory)
+                            .monospace()
+                            .size(10.0)
+                            .color(theme::MUTED),
+                    );
+                    ui.label(
+                        egui::RichText::new("Not connected yet")
+                            .size(10.0)
+                            .color(theme::PRIMARY),
+                    );
+                });
                 if index % 2 == 1 {
                     ui.end_row();
                 }
@@ -53,7 +48,7 @@ pub fn show(ui: &mut egui::Ui) {
     notice(
         ui,
         "Metadata integration is Phase 2",
-        "The category layout is prepared, but no Mojang manifest is fetched and no version is installable in this Phase 0 build.",
+        "The category layout is prepared, but the Mojang manifest and installer are implemented in Phases 2 and 3.",
     );
 }
 

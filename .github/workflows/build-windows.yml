@@ -1,4 +1,4 @@
-name: Windows CI
+name: Saturn Windows CI
 
 on:
   push:
@@ -10,12 +10,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-ci-${{ github.ref }}
+  group: saturn-windows-ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
-    name: Build Windows x64
+    name: Build Saturn for Windows x64
     runs-on: windows-latest
 
     steps:
@@ -28,7 +28,7 @@ jobs:
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: Check formatting
+      - name: Format Rust sources
         run: cargo fmt --all
 
       - name: Run Clippy
@@ -44,17 +44,17 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item target/release/rustlauncher.exe dist/RustLauncher.exe
+          Copy-Item target/release/saturn-launcher.exe dist/Saturn.exe
           Copy-Item README.md dist/README.md
           Copy-Item LICENSE dist/LICENSE
-          Compress-Archive -Path dist/* -DestinationPath RustLauncher-windows-x64.zip -Force
+          Compress-Archive -Path dist/* -DestinationPath Saturn-windows-x64.zip -Force
 
       - name: Upload Windows executable and ZIP
         uses: actions/upload-artifact@v7
         with:
-          name: RustLauncher-windows-x64
+          name: Saturn-windows-x64
           path: |
-            dist/RustLauncher.exe
-            RustLauncher-windows-x64.zip
+            dist/Saturn.exe
+            Saturn-windows-x64.zip
           if-no-files-found: error
           retention-days: 14

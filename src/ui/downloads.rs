@@ -1,17 +1,17 @@
 use eframe::egui;
 
-use super::{notice, section_heading};
+use super::{notice, section_heading, theme};
 
 pub fn show(ui: &mut egui::Ui) {
     section_heading(
         ui,
         "Download manager",
-        "A single place for installation, runtime and asset download tasks.",
+        "A single place for game, asset, library and runtime transfer tasks.",
     );
     notice(
         ui,
         "No active downloads",
-        "Queue management, parallel transfers, progress reporting, retry, resume and checksum verification will be implemented in Phase 3.",
+        "Queue management, parallel transfers, progress reporting, retry, resume and checksum verification arrive in Phase 3.",
     );
     ui.add_space(14.0);
     ui.label(egui::RichText::new("Planned download states").strong());
@@ -29,7 +29,7 @@ pub fn show(ui: &mut egui::Ui) {
             ui.label(
                 egui::RichText::new(state)
                     .size(11.0)
-                    .color(egui::Color32::from_gray(175)),
+                    .color(theme::MUTED),
             );
             ui.label("·");
         }

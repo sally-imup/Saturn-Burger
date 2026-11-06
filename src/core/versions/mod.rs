@@ -3,7 +3,7 @@
 /// Top-level categories shown by the future version browser.
 ///
 /// This is a UI/domain outline only; manifest parsing and classification are not
-/// implemented in Phase 0.
+/// implemented in Phase 1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VersionCategory {
     Release,

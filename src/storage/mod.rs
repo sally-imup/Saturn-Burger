@@ -1,14 +1,12 @@
-//! Filesystem layout helpers for RustLauncher.
+//! Filesystem layout helpers for Saturn Launcher.
 
 use std::env;
 use std::io;
 use std::path::{Path, PathBuf};
 
-const APP_DIRECTORY_NAME: &str = "RustLauncher";
+const APP_DIRECTORY_NAME: &str = "Saturn";
 
 /// Returns the platform's roaming application-data directory on Windows.
-///
-/// `LOCALAPPDATA` is accepted as a fallback for restricted or unusual environments.
 pub fn suggested_data_directory() -> Option<PathBuf> {
     env::var_os("APPDATA")
         .or_else(|| env::var_os("LOCALAPPDATA"))
@@ -16,7 +14,7 @@ pub fn suggested_data_directory() -> Option<PathBuf> {
         .map(|base| base.join(APP_DIRECTORY_NAME))
 }
 
-/// Creates the baseline directory tree used by later launcher phases.
+/// Creates the baseline directory tree used by launcher services.
 pub fn ensure_data_layout() -> io::Result<PathBuf> {
     let root = suggested_data_directory().ok_or_else(|| {
         io::Error::new(

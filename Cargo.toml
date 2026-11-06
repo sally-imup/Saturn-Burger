@@ -1,13 +1,16 @@
 [package]
-name = "rustlauncher"
-version = "0.1.0"
+name = "saturn-launcher"
+version = "0.2.0"
 edition = "2024"
-description = "A modular Minecraft Java launcher for Windows, written in Rust"
+description = "Saturn — a modular Minecraft Java launcher for Windows, written in Rust"
 license = "MIT"
 readme = "README.md"
 
 [dependencies]
 eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "glow"] }
+md-5 = "0.10"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
 [profile.release]
 opt-level = 3

@@ -8,15 +8,15 @@ mod ui;
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
-            .with_title("RustLauncher")
-            .with_inner_size([1180.0, 760.0])
-            .with_min_inner_size([960.0, 640.0]),
+            .with_title("Saturn Launcher")
+            .with_inner_size([1240.0, 800.0])
+            .with_min_inner_size([980.0, 680.0]),
         ..Default::default()
     };
 
     eframe::run_native(
-        "RustLauncher",
+        "Saturn Launcher",
         options,
-        Box::new(|creation_context| Ok(Box::new(app::RustLauncherApp::new(creation_context)))),
+        Box::new(|creation_context| Ok(Box::new(app::SaturnApp::new(creation_context)))),
     )
 }

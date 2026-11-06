@@ -1,84 +1,124 @@
 use eframe::egui;
 
+use crate::core::account::LocalAccountStore;
 use crate::storage;
-use crate::ui::{self, Page};
+use crate::ui::{self, AccountsPageState, Page};
 
-pub struct RustLauncherApp {
+struct StartupState {
+    data_directory: String,
+    data_directory_ready: bool,
+    startup_message: String,
+    account_store: Option<LocalAccountStore>,
+    account_store_error: Option<String>,
+}
+
+pub struct SaturnApp {
     current_page: Page,
     data_directory: String,
     data_directory_ready: bool,
     startup_message: String,
+    account_store: Option<LocalAccountStore>,
+    account_store_error: Option<String>,
+    accounts_page: AccountsPageState,
 }
 
-impl RustLauncherApp {
+impl SaturnApp {
     pub fn new(_creation_context: &eframe::CreationContext<'_>) -> Self {
-        let directory_result = storage::ensure_data_layout();
-        let (data_directory, data_directory_ready, startup_message) = match directory_result {
-            Ok(path) => (
-                path.display().to_string(),
-                true,
-                "Application data directories are ready.".to_owned(),
-            ),
-            Err(error) => (
-                storage::suggested_data_directory()
-                    .map(|path| path.display().to_string())
-                    .unwrap_or_else(|| "Unavailable".to_owned()),
-                false,
-                format!("Could not prepare application data directories: {error}"),
-            ),
-        };
+        let startup = load_startup_state();
 
         Self {
             current_page: Page::Home,
-            data_directory,
-            data_directory_ready,
-            startup_message,
+            data_directory: startup.data_directory,
+            data_directory_ready: startup.data_directory_ready,
+            startup_message: startup.startup_message,
+            account_store: startup.account_store,
+            account_store_error: startup.account_store_error,
+            accounts_page: AccountsPageState::default(),
         }
     }
 }
 
-impl eframe::App for RustLauncherApp {
+impl eframe::App for SaturnApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        ui.ctx().set_visuals(egui::Visuals::dark());
-        let available_size = ui.available_size();
+        ui::theme::apply(ui.ctx());
 
-        egui::Frame::new()
-            .fill(egui::Color32::from_rgb(17, 21, 29))
-            .show(ui, |root_ui| {
-                root_ui.horizontal(|root_ui| {
-                    root_ui.allocate_ui_with_layout(
-                        egui::vec2(218.0, available_size.y),
-                        egui::Layout::top_down(egui::Align::Min),
-                        |sidebar_ui| {
-                            egui::Frame::new()
-                                .fill(egui::Color32::from_rgb(22, 28, 38))
-                                .inner_margin(egui::Margin::same(16))
-                                .show(sidebar_ui, |sidebar_content| {
-                                    ui::show_sidebar(sidebar_content, &mut self.current_page);
-                                });
-                        },
-                    );
-
-                    root_ui.separator();
-                    root_ui.vertical(|content_ui| {
-                        content_ui.set_width(content_ui.available_width());
-                        ui::show_top_bar(content_ui, self.current_page);
-                        content_ui.separator();
-                        egui::ScrollArea::vertical()
-                            .auto_shrink([false, false])
-                            .show(content_ui, |page_ui| {
-                                page_ui.add_space(18.0);
-                                ui::show_page(
-                                    page_ui,
-                                    self.current_page,
-                                    &self.data_directory,
-                                    self.data_directory_ready,
-                                    &self.startup_message,
-                                );
-                                page_ui.add_space(20.0);
-                            });
-                    });
-                });
+        egui::Panel::left("saturn_navigation")
+            .exact_size(236.0)
+            .resizable(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(ui::theme::SURFACE)
+                    .inner_margin(egui::Margin::same(16)),
+            )
+            .show(ui, |sidebar| {
+                ui::show_sidebar(sidebar, &mut self.current_page);
             });
+
+        egui::Panel::top("saturn_top_bar")
+            .exact_size(82.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(ui::theme::BACKGROUND)
+                    .inner_margin(egui::Margin::symmetric(24, 14)),
+            )
+            .show(ui, |top| {
+                ui::show_top_bar(top, self.current_page, self.account_store.as_ref());
+            });
+
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::new()
+                    .fill(ui::theme::BACKGROUND)
+                    .inner_margin(egui::Margin::symmetric(24, 12)),
+            )
+            .show(ui, |content| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(content, |page_ui| {
+                        ui::show_page(
+                            page_ui,
+                            self.current_page,
+                            &self.data_directory,
+                            self.data_directory_ready,
+                            &self.startup_message,
+                            self.account_store.as_mut(),
+                            self.account_store_error.as_deref(),
+                            &mut self.accounts_page,
+                        );
+                    });
+            });
+    }
+}
+
+fn load_startup_state() -> StartupState {
+    match storage::ensure_data_layout() {
+        Ok(path) => {
+            let display_path = path.display().to_string();
+            match LocalAccountStore::load(&path) {
+                Ok(store) => StartupState {
+                    data_directory: display_path,
+                    data_directory_ready: true,
+                    startup_message: "Saturn storage and local profile database are ready.".to_owned(),
+                    account_store: Some(store),
+                    account_store_error: None,
+                },
+                Err(error) => StartupState {
+                    data_directory: display_path,
+                    data_directory_ready: true,
+                    startup_message: "Saturn storage is ready, but the local profile database needs attention.".to_owned(),
+                    account_store: None,
+                    account_store_error: Some(error),
+                },
+            }
+        }
+        Err(error) => StartupState {
+            data_directory: storage::suggested_data_directory()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "Unavailable".to_owned()),
+            data_directory_ready: false,
+            startup_message: format!("Could not prepare Saturn application data directories: {error}"),
+            account_store: None,
+            account_store_error: Some("Application storage is unavailable.".to_owned()),
+        },
     }
 }
