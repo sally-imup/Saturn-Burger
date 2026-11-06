@@ -1,5 +1,6 @@
 #![windows_subsystem = "windows"]
 
+mod icons;
 mod java;
 mod launcher;
 mod manifest;
@@ -77,6 +78,7 @@ enum Msg {
 }
 
 struct App {
+    icons: icons::Icons,
     cfg: Config,
     /// Profil yang sudah terpasang (ditampilkan di daftar utama).
     profiles: Vec<Profile>,
@@ -103,7 +105,7 @@ struct App {
 }
 
 impl App {
-    fn new() -> Self {
+    fn new(icons: icons::Icons) -> Self {
         let (tx, rx) = channel();
         let cfg = launcher::load_config();
         let profiles = profiles::load();
@@ -124,6 +126,7 @@ impl App {
         });
 
         Self {
+            icons,
             cfg,
             profiles,
             selected,
@@ -247,13 +250,15 @@ impl App {
                 for i in filtered {
                     let v = &self.versions[i];
                     let installed = self.profiles.iter().any(|p| p.version_id == v.id);
-                    let mut label = format!("{}   [{}]", v.id, v.kind);
-                    if installed {
-                        label.push_str("   ✓ terpasang");
-                    }
-                    if ui.selectable_label(self.add_selected == Some(i), label).clicked() {
-                        picked = Some(i);
-                    }
+                    let label = format!("{}   [{}]", v.id, v.kind);
+                    ui.horizontal(|ui| {
+                        if installed {
+                            ui.add(egui::Image::new(icons::img(&self.icons.check, 14.0)));
+                        }
+                        if ui.selectable_label(self.add_selected == Some(i), label).clicked() {
+                            picked = Some(i);
+                        }
+                    });
                 }
             });
         if let Some(i) = picked {
@@ -287,7 +292,10 @@ impl App {
                     self.show_add = false;
                 }
             }
-            if ui.button("Batal").clicked() {
+            if ui
+                .add(egui::Button::image_and_text(icons::img(&self.icons.close, 14.0), "Batal"))
+                .clicked()
+            {
                 self.show_add = false;
             }
         });
@@ -332,7 +340,7 @@ impl eframe::App for App {
                 Msg::Manifest(Ok(v)) => {
                     self.versions = v;
                     self.status = if self.profiles.is_empty() {
-                        "Klik ＋ Tambah untuk memasang versi".into()
+                        "Klik + Tambah untuk memasang versi".into()
                     } else {
                         "Siap".into()
                     };
@@ -374,7 +382,8 @@ impl eframe::App for App {
             ui.horizontal(|ui| {
                 ui.heading("Saturn");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add_enabled(!self.busy, egui::Button::new("＋ Tambah")).clicked() {
+                    let tambah = egui::Button::image_and_text(icons::img(&self.icons.plus, 14.0), "Tambah");
+                    if ui.add_enabled(!self.busy, tambah).clicked() {
                         self.show_add = true;
                         self.add_selected = None;
                     }
@@ -383,7 +392,9 @@ impl eframe::App for App {
             if let Some(u) = self.update.clone() {
                 ui.horizontal(|ui| {
                     ui.colored_label(ACCENT, format!("Versi baru {} tersedia", u.version));
-                    if ui.button("Update").clicked() {
+                    let update_btn =
+                        egui::Button::image_and_text(icons::img(&self.icons.download, 14.0), "Update");
+                    if ui.add(update_btn).clicked() {
                         self.start_update(u);
                     }
                 });
@@ -424,7 +435,6 @@ impl eframe::App for App {
 
         let mut play_req: Option<usize> = None;
         let mut remove_req: Option<usize> = None;
-        let mut select_req: Option<usize> = None;
 
         egui::CentralPanel::default().show(ctx, |ui| {
             if self.profiles.is_empty() {
@@ -432,7 +442,7 @@ impl eframe::App for App {
                     ui.add_space(80.0);
                     ui.heading("Belum ada versi");
                     ui.label(
-                        egui::RichText::new("Klik ＋ Tambah untuk memasang versi Minecraft")
+                        egui::RichText::new("Klik + Tambah untuk memasang versi Minecraft")
                             .color(MUTED),
                     );
                 });
@@ -442,7 +452,7 @@ impl eframe::App for App {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for (i, p) in self.profiles.iter().enumerate() {
                     let fill = if self.selected == Some(i) { CARD_SELECTED } else { CARD };
-                    let resp = egui::Frame::none()
+                    egui::Frame::none()
                         .fill(fill)
                         .rounding(10.0)
                         .inner_margin(12.0)
@@ -453,7 +463,7 @@ impl eframe::App for App {
                                     let badge = if p.isolated { "Terisolasi" } else { "Bersama" };
                                     ui.label(
                                         egui::RichText::new(format!(
-                                            "Minecraft {}  ·  {}  ·  {}",
+                                            "Minecraft {}  |  {}  |  {}",
                                             p.version_id, p.version_kind, badge
                                         ))
                                         .color(MUTED)
@@ -463,11 +473,21 @@ impl eframe::App for App {
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
-                                        if ui.button("Hapus").clicked() {
+                                        let hapus = egui::Button::image_and_text(
+                                            icons::img(&self.icons.trash, 14.0),
+                                            "Hapus",
+                                        );
+                                        if ui.add(hapus).clicked() {
                                             remove_req = Some(i);
                                         }
                                         if ui
-                                            .add_enabled(!self.busy, egui::Button::new("▶ Main"))
+                                            .add_enabled(
+                                                !self.busy,
+                                                egui::Button::image_and_text(
+                                                    icons::img(&self.icons.play, 14.0),
+                                                    "Main",
+                                                ),
+                                            )
                                             .clicked()
                                         {
                                             play_req = Some(i);
@@ -475,19 +495,12 @@ impl eframe::App for App {
                                     },
                                 );
                             });
-                        })
-                        .response;
-                    if resp.interact(egui::Sense::click()).clicked() {
-                        select_req = Some(i);
-                    }
+                        });
                     ui.add_space(6.0);
                 }
             });
         });
 
-        if let Some(i) = select_req {
-            self.selected = Some(i);
-        }
         if let Some(i) = play_req {
             self.selected = Some(i);
             self.play(i);
@@ -527,7 +540,10 @@ impl eframe::App for App {
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
                             if ui
-                                .button(egui::RichText::new("Hapus").color(egui::Color32::LIGHT_RED))
+                                .add(egui::Button::image_and_text(
+                                    icons::img(&self.icons.trash, 14.0),
+                                    egui::RichText::new("Hapus").color(egui::Color32::LIGHT_RED),
+                                ))
                                 .clicked()
                             {
                                 confirmed = true;
@@ -582,7 +598,8 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|cc| {
             apply_style(&cc.egui_ctx);
-            Ok(Box::new(App::new()))
+            let icons = icons::Icons::new(&cc.egui_ctx);
+            Ok(Box::new(App::new(icons)))
         }),
     )
 }

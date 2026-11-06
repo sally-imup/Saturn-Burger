@@ -10,6 +10,13 @@ on:
 permissions:
   contents: write
 
+# Tanda tangan digital (opsional). Isi secrets ini di repo supaya build otomatis ditandatangani:
+#   SIGN_CERT_BASE64  = isi file .pfx dalam base64
+#   SIGN_CERT_PASSWORD = password .pfx
+env:
+  SIGN_CERT_BASE64: ${{ secrets.SIGN_CERT_BASE64 }}
+  SIGN_CERT_PASSWORD: ${{ secrets.SIGN_CERT_PASSWORD }}
+
 jobs:
   build:
     name: Build installer (Windows)
@@ -26,6 +33,15 @@ jobs:
 
       - name: Build release
         run: cargo build --release
+
+      - name: Sign saturn.exe
+        if: ${{ env.SIGN_CERT_BASE64 != '' }}
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "cert.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGN_CERT_BASE64))
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName -Descending | Select-Object -First 1
+          & $signtool.FullName sign /f $pfx /p $env:SIGN_CERT_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /d "Saturn" target\release\saturn.exe
 
       - name: Set version
         shell: pwsh
@@ -44,6 +60,16 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target\release\saturn.exe dist\
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$env:APP_VERSION" installer\saturn.iss
+
+      - name: Sign installer
+        if: ${{ env.SIGN_CERT_BASE64 != '' }}
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "cert.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGN_CERT_BASE64))
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName -Descending | Select-Object -First 1
+          $setup = (Get-ChildItem dist\Saturn-*-Setup.exe).FullName
+          & $signtool.FullName sign /f $pfx /p $env:SIGN_CERT_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /d "Saturn Setup" $setup
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
